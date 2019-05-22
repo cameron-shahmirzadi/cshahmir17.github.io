@@ -1,0 +1,299 @@
+---
+title: "Final Project"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+```
+
+## Introduction
+
+The issue of police brutality and shootings has become especially prevalent in recent years. The death of Terence Crutcher, a 40-year-old unarmed man who was fatally shot by a police officer in 2016, is one of many cases highlighted in the media to show there is clearly an issue in police culture (an article about the shooting can be found on CNN: https://www.cnn.com/2019/03/01/us/oklahoma-tulsa-shooting-federal-decision/index.html). Search journals like the New York Times or Washington Post and you will find a multitude of articles highlighting officers let off the hook after tasing or shooting an unarmed suspect. While protests and movements have responded to the apparent problem, subjective evaluation of police brutality is not enough to support a push for change.
+
+This is where data science comes in- concrete analysis of raw data involving police shootings can be used as objective evidence of the issues in police culture. In this project, I hope to show the audience through a tutorial on the process of data science that the skill is essential to make any conclusions about trends and patterns. Furthermore, the principles of machine learning can even allow us to predict the likelihood of police shootings based on demographic and geographical factors. 
+
+##Ingesting/Scraping Data
+
+I'll begin by reading in the raw data. The Washington Post provides a CSV file which contains information about all fatal police shootings from 2015-present. To read more about how the data is collected, you can visit the site (https://www.washingtonpost.com/graphics/2019/national/police-shootings-2019/?utm_term=.4c414ac816b8). We use the R function read_csv in order to store the data in an R dataframe that we can access to analyze and clean up the information provided:
+
+```{r intro}
+dataset <- read_csv("database.csv")
+```
+
+##Tidying Data
+
+A tedious but necessary step in the cycle of data science involves cleaning up and parsing data. Luckily, the CSV file provided by the Washington Post is well organized; normally, missing entries would have to be replaced with the value NA, but many entries are already taken care of. 
+
+However, in the attributes "threat_level" and "armed", some entries are described as "undetermined." We access each observation with the threat_level or armed attributes set as "undetermined" and change them to NA to make analysis easier later on:
+
+```{r tidy}
+dataset$threat_level[dataset$threat_level=="undetermined"] <- NA
+dataset$armed[dataset$armed=="undetermined"] <- NA
+```
+
+(the "$" accesses threat_level as a vector, so we change all values of "undetermined" to NA using this vector).
+
+Next, I would like to extract the last and first name of each person in the dataset; this would be useful later for organizing the data alphabetically or more easily finding an entry.
+
+I also extract the year from the date of each death for later analysis.
+
+```{r tidy2}
+dataset <- dataset %>% 
+  mutate("last_name" = (str_extract(name, "[A-Za-z]+$")),
+         "first_name" = (str_extract(name, "^[A-Za-z]+")))
+dataset <- dataset %>% 
+  mutate("year" = format(date, "%Y"))
+```
+
+("mutate" allows us to create a new attribute; "str_extract"" is a function that matches the regular expression in quotes to each entry's name and copies that matched string to the new attribute. The regular expression matches all the letters attached to the end of the string (indicated by the anchor "$") for last name, and all the letters attached to the beginning (indicated by "^") for first name).
+
+Lastly, I wanted to extract information about whether or not each victim was fleeing as a new logical attribute, as well as whether or not the victim was armed. I also removed the value body_camera, since this information is not valuable to the analysis that will be done.
+
+```{r tidy3}
+
+dataset <- dataset %>% 
+  mutate("was_fleeing" = (flee != "Not fleeing"))
+dataset <- dataset %>% select(-body_camera)
+
+dataset <- dataset %>% 
+  mutate("was_armed" = ifelse(is.na(armed), NA, armed != "unarmed"))
+```
+
+##Exploratory Data Analysis : Visualization
+
+Once the data has been collected and tidied, the next step in the data science cycle is exploratory data analysis. The goal is to better understand the data at hand in order to make decisions in the Machine Learning step.
+
+We can start by analyzing single variables; below I graph the age of victims.
+
+```{r eda_visualization1}
+dataset %>%
+  rowid_to_column() %>%
+  ggplot(aes(x=rowid, y=age)) +
+    geom_point(na.rm = TRUE) 
+```
+
+We can also use ggplot with geom_histogram in order to graph the distribution of ages, which helps us understand the frequency of each age in the dataset of people who had been killed by police.
+
+```{r eda_histograpm}
+dataset %>%
+  ggplot(aes(x=age)) +
+    geom_histogram() 
+```
+
+The histogram shows us that the most common ages are around 25 and 28.
+
+To better visualize the distribution of ages, I can arrange the ages by ascending order and then graph them using the arrange() function:
+
+```{r eda_visualization2}
+dataset %>%
+  arrange(age) %>%
+  rowid_to_column() %>%
+  ggplot(aes(x=rowid, y=age)) +
+    geom_point(na.rm = TRUE) 
+```
+
+We can also look at the distribution of age using a boxplot instead, which gives us the median (the line in the middle of the box), the first and third quartiles, the max and min, as well as outliers.
+
+```{r eda_boxplot}
+dataset %>%
+   ggplot(aes(x='',y=age)) +
+    geom_boxplot(na.rm = TRUE)
+```
+
+We can take a look at the summary statistics to better analyze the distribution of data by using the summarize() method on the dataset:
+
+```{r eda_boxplot2}
+dataset %>% summarize(min_age = min(age, na.rm = TRUE), max_age = max(age, na.rm = TRUE))
+dataset %>% summarize(mean_age = mean(age, na.rm = TRUE), median_age = median(age, na.rm = TRUE))
+```
+
+Therefore the mean age of victims is 36, while the median is 34.
+
+One aspect of data we need to take into account is if it is skewed. One way to test this is comparing the distance between the 1st quartile and the median with the distance between the 3rd quartile and the median. We can take a look graphically by plotting the median, quartiles, and outliers by extracting each value and drawing them on top of a histogram of ages.
+
+We can extract the quartiles by using the quantile() function, and calculate the outliers by using two k multipliers, 1.5 and 3, and utilizing the Turkey outlier rule to calculate Q1 - (k x IQR) and Q1 + (k x IQR). (The IQR is the difference between the 3rd and 1st quartiles).
+
+```{r eda_summarize}
+quartile_data <- dataset %>%
+  summarize(firstq=quantile(dataset$age, p=1/4, na.rm = TRUE),
+            thirdq=quantile(dataset$age, p=3/4, na.rm = TRUE), iqr=IQR(age, na.rm = TRUE)) %>%
+  slice(rep(1, 2)) %>%
+  mutate(k_value = c(1.5, 3)) %>%
+  mutate(lower_outlier = firstq - k_value * iqr) %>%
+  mutate(upper_outlier = thirdq + k_value * iqr)
+
+dataset %>%
+  ggplot(aes(x=age)) +
+    geom_histogram(bins=100, na.rm = TRUE) +
+    geom_vline(aes(xintercept=median(age, na.rm = TRUE)), size=0.8, color="blue") + geom_vline(aes(xintercept=firstq), data=quartile_data, size=1,color="red", na.rm = TRUE) + 
+  geom_vline(aes(xintercept=thirdq), data=quartile_data, size=1,color="red", na.rm = TRUE) + 
+  geom_vline(aes(xintercept=lower_outlier), data=quartile_data, color="green", size = 1, linetype = 2) +
+    geom_vline(aes(xintercept=upper_outlier), data=quartile_data, color="green", size = 1, linetype = 2)
+
+quartile_data$lower_outlier
+quartile_data$upper_outlier
+```
+
+
+As the above graph shows, there is a slight skew as the difference between the 3rd quartile and median is larger. Furthermore, there are only a few mild outliers (indicated by the green lines) only occuring above the age of 73. 
+
+##Exploratory Data Analysis : Multiple Variables
+
+We can also analyze the relationship between multiple variables in our dataset. For example, we can explore the date in 2015 vs. number of killings by creating a bar graph using geom_bar():
+
+```{r multiple_var}
+dataset %>% group_by(date) %>% filter(year == 2015) %>% summarize(num_killings = n()) %>%
+  ggplot(aes(x=date, y=num_killings)) +
+    geom_bar(stat = "identity")
+```
+
+We can also explore the relationship between race and age by plotting the distribution of age conditioned on race using geom_boxplot() again:
+
+```{r multiple_var1}
+dataset %>% filter(!is.na(race)) %>% 
+  ggplot(aes(x=race, y=age)) +
+    geom_boxplot(na.rm = TRUE)
+```
+
+An interesting observation from the above graph is the larger amount of outliers in the Black and Hispanic categories, as well as the higher median age for Asians and Whites.
+
+The dataset also includes attributes indicating whether the victim was fleeing, as well as whether the victim was armed. We can explore these attributes conditioned on race by taking the percentage who was armed or fleeing and plotting them using geom_bar(). 
+
+To do this, I group by race, count the number of victims, and then filter who was armed or fleeing take the percentage.
+
+```{r multiple_var2}
+number_each_race <- dataset %>% group_by(race) %>% tally()
+dataset %>% group_by(race) %>% filter(was_armed == TRUE) %>% summarize(num_armed = n()) %>% inner_join(number_each_race, by = "race") %>% mutate(number = as.double(num_armed)/as.double(n)) %>% ggplot(aes(x=race, y=number)) +
+    geom_bar(stat = "identity", na.rm = TRUE) + labs(y = "percentage armed")
+
+number_each_race <- dataset %>% group_by(race) %>% tally()
+dataset %>% group_by(race) %>% filter(was_fleeing == TRUE) %>% summarize(num_fleeing = n()) %>% inner_join(number_each_race, by = "race") %>% mutate(number = as.double(num_fleeing)/as.double(n)) %>% ggplot(aes(x=race, y=number)) +
+    geom_bar(stat = "identity", na.rm = TRUE) + labs(y = "percentage that was fleeing")
+```
+
+I can perform a similar operation and observe the relationship between race and indication of mental illness using the signs_of_mental_illness attribute:
+
+```{r multiple_var4}
+number_each_race <- dataset %>% group_by(race) %>% tally()
+dataset %>% group_by(race) %>% filter(signs_of_mental_illness == TRUE) %>% summarize(num_mental_illness = n()) %>% inner_join(number_each_race, by = "race") %>% mutate(number = as.double(num_mental_illness)/as.double(n)) %>% ggplot(aes(x=race, y=number), na.rm = TRUE) +
+    geom_bar(stat = "identity", na.rm = TRUE) + labs(y = "percentage with signs of mental illness")
+```
+
+Don't forget, however, that the data contains more samples for whites than minorities, and so the percentages are more accurate for whites than for underrepresented groups in the dataset (as shown below using the tally() method):
+
+```{r multiple_var3}
+dataset %>% group_by(race) %>% tally()
+```
+
+This is something to be especially aware of when analyzing data: the presence of skew is important to take into account. Computer scientists are continuing to combat the implications of bias and skew in machine learning by purposely seeking out more diverse datasets and sampling populations with more minorities. Furthermore, the idea of keeping sensitive attributes like gender or race protected is something that data scientists tend toward in order to avoid bias.
+
+##Linear Regression
+
+If we wanted to model the interactions between variables to use for prediction in the future, one way to do this is through linear regression. We can predict age conditioned on race of a victim using linear regression since age is a numeric, continuous attribute: 
+
+```{r multiple_var5}
+fit <- lm(age~race, data=dataset)
+fit %>% tidy()
+```
+
+We can interpret the above table in the following way: the estimate of age for each rate is given by the intercept + the estimate given for the race; for Asians, estimate is the intercept. Thus we can extract the estimate for each variable:
+
+```{r}
+frame <- fit %>% tidy()
+frame <- frame %>% mutate(race = c("Asian", "Black", "Hispanic", "Native American", "Other", "White")) %>% mutate(slope = ifelse(str_detect(term, "Intercept"), estimate, estimate + frame$estimate[1])) %>% select(race, slope)
+frame
+```
+
+Notice, however, that the p-value for the Other and White category is greater than 0.05, and so the estimate is not statistically significant and we cannot make a conclusion about the predicted age based on race for those two categories. 
+
+```{r multiple_var6}
+fit <- lm(age~race*gender, data=dataset)
+fit %>% tidy()
+```
+
+To learn more about linear regression, and some of the math behind the regression function please explore the following article "Linear Regression - Detailed View" (https://towardsdatascience.com/linear-regression-detailed-view-ea73175f6e86).
+
+##Classification
+
+When trying to predict the value of categorical variables, linear regression is not applicable since the value isn't continuous or numerical. However, we can use logistic regression to create a linear relationship between the log of odds (which represents p(x)/(1-p(x))) and each attribute. The probability p(x) that the categorical value will be 1 or 0 can then be calculated by the output.
+
+To read more about the method of logistic regression in depth, the article "Logit Regression" (https://stats.idre.ucla.edu/r/dae/logit-regression/) explains the intricacies behind the R method glm.
+
+To start predicting if a victim was armed based on age, we need to first encode was_armed as 1 if true or 0 if false. Then, we use the glm() function to calculate an estimation of the logistic regression equation.
+
+```{r classification1}
+dataset <- dataset %>% mutate(was_armed_binary = ifelse(was_armed == TRUE, 1, 0))
+fit <- glm(was_armed_binary~age, data=dataset)
+fit %>% tidy()
+```
+
+To interpret the estimates, we take the intercept and add to the estimate. We then transform from log odds to probability by taking exp(estimate) / (1 + exp(estimate)).
+
+```{r}
+frame <- fit %>% tidy()
+exp(frame$estimate[1] + frame$estimate[2])/( 1 + exp(frame$estimate[1] + frame$estimate[2]))
+```
+
+Since the p-value is less than 0.05, the estimate is stastically significant and we can state that the probability of a victim being armed conditioned by age is indicated by the slope of 0.7.
+
+
+looking at if mentally ill vs. gender
+```{r classification}
+dataset <- dataset %>% mutate(gender_binary = ifelse(gender == "M", 1, 0))
+fit <- glm(gender_binary~race, data=dataset)
+fit %>% tidy()
+```
+Interesting: only statistically significant for Native Americans!
+
+```{r}
+frame <- fit %>% tidy()
+frame <- frame %>% mutate(race = c("Asian", "Black", "Hispanic", "Native American", "Other", "White")) %>% mutate(probability = ifelse(str_detect(term, "Intercept"), exp(estimate)/(1 + exp(estimate)), exp(estimate + frame$estimate[1])/(1 + exp(estimate + frame$estimate[1])))) %>% select(race, probability)
+frame
+```
+
+##Tree-Based Methods
+
+The following is a regression tree that seeks to predict the outcome variable of age based on the variable of signs of mental illness. We can learn from the following tree that if signs of mental illness is greater than .5 the predicted age rises by nearly four years.
+```{r}
+library(tree)
+tree <- tree(age~signs_of_mental_illness, data=dataset)
+plot(tree)
+text(tree, pretty=0, cex=1.3)
+```
+
+Similar to above this tree shows another regression tree that seeks to predict the likelihood of one of the reported fatal police shootings involving a suspect that was armed. As we can see the chances for the suspect to be armed increase by nearly 7% for in cases involving someone over the age of 30.5
+```{r}
+library(tree)
+tree <- tree(was_armed_binary~age, data=dataset)
+plot(tree)
+text(tree, pretty=0, cex=1.3)
+```
+
+Unlike before now we're going to explore a different type of tree based method, a decision tree. Rather than predicting a linear variables result, with a decision or classification tree we are attempting to classify an entry and predict a categorical variable. 
+Rather than rely on a single tree we can also use an ensemble method called "Random Forest". Rather than simply use one tree, in Random Forest we take samples from the initial dataset and train trees on each sample resulting in multiple decision tree's. We take the consensus result from all decision trees and this gives us a more accurate classification or prediction. 
+
+```{R random_forest, message=FALSE}
+dataset2 <- na.omit(dataset)
+train_indices <- sample(nrow(dataset2), nrow(dataset2)/2)
+train_set <- dataset2[train_indices,]
+test_set <- dataset2[-train_indices,]
+
+library(randomForest)
+
+was_armed_rf <- randomForest(as.factor(was_armed)~ age + gender_binary + signs_of_mental_illness + was_fleeing, importance=TRUE, data=train_set, mtry=3, na=na.omit(), classwt = c(.5, .5))
+
+was_armed_rf
+```
+To explain some more of the random forest's parameters in depth, by setting mtry=4 we are telling each tree in the forest (500 trees default) to make its classification based on three of the four provided variables. We are also setting classwt = .5,.5 to ensure that both our classes (armed and not armed) are equally important. Although removing the class weight will improve the accuracy of our classifier, we will run into a common machine learning issue of having imbalanced classes. Since the majority of our data involves cases in which the person involved was in fact armed, the classifier can accomplish higher accuracy simply through assigning nearly every entry to being armed. Unfortunately the less represented class is equally important to classify correctly and we can rectify this issue through class weight. 
+
+
+
+
+
+
+
